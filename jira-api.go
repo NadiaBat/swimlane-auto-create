@@ -27,7 +27,7 @@ type session struct {
 	Value string `json:"value"`
 }
 
-type AuthData struct {
+type authData struct {
 	Session session `json:"session"`
 }
 
@@ -57,6 +57,7 @@ type issue struct {
 }
 
 type swimlaneUpdates struct {
+	ID     int
 	Name   string
 	Action string
 	Query  string
@@ -69,14 +70,33 @@ func updateDashboardIfNeed(oldIssue issue, newIssue issue, dashboardID int) erro
 	}
 
 	if updates.Action == removeAction {
-		// remove swimlane from board
+		return removeSwimlane(dashboardID, updates.ID)
 	}
 
 	if updates.Action == createAction {
-		// create swimlane on board
+		createSwimlane(dashboardID, updates)
 	}
 
 	return nil
+}
+
+func removeSwimlane(dashboardID int, swimlaneID int) error {
+	uri := fmt.Sprintf("%s/rest/greenhopper/1.0/swimlanes/%d/%d", apiBaseURI, dashboardID, swimlaneID)
+
+	return deleteFromJiraAPI(uri)
+}
+
+func createSwimlane(dashboardID int, updates swimlaneUpdates) error {
+	uri := fmt.Sprintf("%s/rest/greenhopper/1.0/swimlanes/%d/", apiBaseURI, dashboardID)
+	data := map[string]string{"name": updates.Name, "query": updates.Query}
+
+	body, err := json.Marshal(data)
+	if err != nil {
+		return errors.Wrap(err, "Can not create swimlane")
+	}
+	_, err = postToJiraAPI(uri, []byte(body))
+
+	return err
 }
 
 func getSwimlaneUpdates(dashboardID int, newIssue issue, oldIssue issue) (swimlaneUpdates, error) {
@@ -104,15 +124,25 @@ func getSwimlaneUpdates(dashboardID int, newIssue issue, oldIssue issue) (swimla
 		}
 	}
 
-	// check, it can be need a swimlane id (not shure)
 	if isNeedToRemoveSwimlane(newLabels, oldLabels) {
 		result = swimlaneUpdates{
+			ID:     getSwimlaneID(swimlaneName, currentSwimlanes),
 			Name:   swimlaneName,
 			Action: removeAction,
 		}
 	}
 
 	return result, nil
+}
+
+func getSwimlaneID(name string, swimlanes []swimlane) int {
+	for _, swimlane := range swimlanes {
+		if swimlane.Name == name {
+			return swimlane.ID
+		}
+	}
+
+	return 0
 }
 
 // we can create swimlanes not from curent sprint, don`t use now
@@ -240,7 +270,7 @@ func getCurrentDashboard(ID int) (dashboard, error) {
 func getFromJiraAPI(uri string) ([]byte, error) {
 	authData, err := login()
 	if err != nil {
-		return nil, errors.Wrapf(err, "Jira api login for request failed %s", uri)
+		return nil, err
 	}
 
 	request, err := http.NewRequest("GET", uri, nil)
@@ -271,31 +301,99 @@ func getFromJiraAPI(uri string) ([]byte, error) {
 	return body, nil
 }
 
+func postToJiraAPI(uri string, data []byte) ([]byte, error) {
+	authData, err := login()
+	if err != nil {
+		return nil, err
+	}
+
+	body, err := json.Marshal(data)
+	if err != nil {
+		return nil, errors.Wrap(err, "Post request failed")
+	}
+
+	request, err := http.NewRequest("POST", uri, bytes.NewBuffer(body))
+	if err != nil {
+		return nil, errors.Wrapf(err, "Jira api request building failed %s", uri)
+	}
+
+	request.Header.Add(
+		"Cookie",
+		fmt.Sprintf("%s=%s", authData.Session.Name, authData.Session.Value),
+	)
+	request.Header.Add("X-Atlassian-Token", "no-check")
+
+	client := &http.Client{}
+	response, err := client.Do(request)
+
+	if err != nil {
+		return nil, errors.Wrapf(err, "Jira api request failed %s", uri)
+	}
+
+	defer response.Body.Close()
+	result, err := ioutil.ReadAll(response.Body)
+
+	if err != nil {
+		return nil, errors.Wrapf(err, "Jira api request failed %s", uri)
+	}
+
+	return result, nil
+}
+
+func deleteFromJiraAPI(uri string) error {
+	authData, err := login()
+	if err != nil {
+		return err
+	}
+
+	request, err := http.NewRequest("DELETE", uri, nil)
+	if err != nil {
+		return errors.Wrapf(err, "Jira api request building failed %s", uri)
+	}
+
+	request.Header.Add(
+		"Cookie",
+		fmt.Sprintf("%s=%s", authData.Session.Name, authData.Session.Value),
+	)
+	request.Header.Add("X-Atlassian-Token", "no-check")
+
+	client := &http.Client{}
+	response, err := client.Do(request)
+
+	if err != nil {
+		return errors.Wrapf(err, "Jira api request failed %s", uri)
+	}
+
+	defer response.Body.Close()
+
+	return nil
+}
+
 // POST request to login to JIRA API
-func login() (AuthData, error) {
+func login() (authData, error) {
 	loginData := map[string]string{"username": username, "password": password}
 
 	request, err := json.Marshal(loginData)
 	if err != nil {
-		return AuthData{}, errors.Wrap(err, "Auth failed")
+		return authData{}, errors.Wrap(err, "Auth failed")
 	}
 
 	response, err := http.Post(loginURI, "application/json", bytes.NewBuffer(request))
 	if err != nil {
-		return AuthData{}, errors.Wrap(err, "Auth failed")
+		return authData{}, errors.Wrap(err, "Auth failed")
 	}
 
 	defer response.Body.Close()
 	body, err := ioutil.ReadAll(response.Body)
 	if err != nil {
-		return AuthData{}, errors.Wrap(err, "Auth failed")
+		return authData{}, errors.Wrap(err, "Auth failed")
 	}
 
-	authData := AuthData{}
-	err = json.Unmarshal(body, &authData)
+	result := authData{}
+	err = json.Unmarshal(body, &result)
 	if err != nil {
-		return AuthData{}, errors.Wrap(err, "Auth failed")
+		return authData{}, errors.Wrap(err, "Auth failed")
 	}
 
-	return authData, nil
+	return result, nil
 }
