@@ -1,0 +1,1 @@
+Add and remove based on issue labels swimlanes on Jira dashboard

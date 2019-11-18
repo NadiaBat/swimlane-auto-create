@@ -22,6 +22,10 @@ const createAction string = "create"
 
 const removeAction string = "remove"
 
+const recyclingTeamLabel string = "recycling-nsk"
+
+const recyclingTeamDashboardID int = 351
+
 type session struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
@@ -63,8 +67,26 @@ type swimlaneUpdates struct {
 	Query  string
 }
 
-func updateDashboardIfNeed(oldIssue issue, newIssue issue, dashboardID int) error {
-	updates, err := getSwimlaneUpdates(dashboardID, newIssue, oldIssue)
+type changelog struct {
+	Dataset changelogItems `json:"changelog"`
+}
+
+type changelogItems struct {
+	Items []changelogItem `json:"items"`
+}
+
+type changelogItem struct {
+	ToString   string `json:"toString"`
+	FromString string `json:"fromString"`
+	Field      string `json:"field"`
+}
+
+func updateDashboardIfNeed(newIssue issue, changelog changelog) error {
+	oldLabels, newLabels := getLabelsFromChangelog(changelog.Dataset.Items)
+	dashboardID := getDashboardID(newLabels)
+
+	updates, err := getSwimlaneUpdates(dashboardID, newIssue, oldLabels, newLabels)
+
 	if err != nil {
 		return err
 	}
@@ -80,6 +102,18 @@ func updateDashboardIfNeed(oldIssue issue, newIssue issue, dashboardID int) erro
 	return nil
 }
 
+// @todo Check adding and removing team labels (make swimlane updates on it)
+// @todo Add media team if need
+func getDashboardID(newLabels []string) int {
+	for _, label := range newLabels {
+		if label == recyclingTeamLabel {
+			return recyclingTeamDashboardID
+		}
+	}
+
+	return 0
+}
+
 func removeSwimlane(dashboardID int, swimlaneID int) error {
 	uri := fmt.Sprintf("%s/rest/greenhopper/1.0/swimlanes/%d/%d", apiBaseURI, dashboardID, swimlaneID)
 
@@ -88,21 +122,20 @@ func removeSwimlane(dashboardID int, swimlaneID int) error {
 
 func createSwimlane(dashboardID int, updates swimlaneUpdates) error {
 	uri := fmt.Sprintf("%s/rest/greenhopper/1.0/swimlanes/%d/", apiBaseURI, dashboardID)
+
 	data := map[string]string{"name": updates.Name, "query": updates.Query}
 
 	body, err := json.Marshal(data)
 	if err != nil {
 		return errors.Wrap(err, "Can not create swimlane")
 	}
+
 	_, err = postToJiraAPI(uri, []byte(body))
 
 	return err
 }
 
-func getSwimlaneUpdates(dashboardID int, newIssue issue, oldIssue issue) (swimlaneUpdates, error) {
-	newLabels := getLabelsField(newIssue.Fields)
-	oldLabels := getLabelsField(oldIssue.Fields)
-
+func getSwimlaneUpdates(dashboardID int, newIssue issue, oldLabels []string, newLabels []string) (swimlaneUpdates, error) {
 	currentSwimlanes, err := getCurrentSwimlanes(dashboardID)
 	if err != nil {
 		return swimlaneUpdates{}, err
@@ -135,6 +168,16 @@ func getSwimlaneUpdates(dashboardID int, newIssue issue, oldIssue issue) (swimla
 	return result, nil
 }
 
+func getLabelsFromChangelog(items []changelogItem) ([]string, []string) {
+	for _, item := range items {
+		if item.Field == labelsFieldID {
+			return strings.Split(item.FromString, ","), strings.Split(item.ToString, ",")
+		}
+	}
+
+	return nil, nil
+}
+
 func getSwimlaneID(name string, swimlanes []swimlane) int {
 	for _, swimlane := range swimlanes {
 		if swimlane.Name == name {
@@ -145,7 +188,6 @@ func getSwimlaneID(name string, swimlanes []swimlane) int {
 	return 0
 }
 
-// we can create swimlanes not from curent sprint, don`t use now
 func getSprintLabel(swimlanes []swimlane) string {
 	sprintSwimlaneFilter := "labels([[:space:]])*=([[:space:]])*(.+-sprint-[0-9]+)"
 
